@@ -31,4 +31,4 @@ update_watermill:
 	go mod edit -fmt
 
 mongo-cli:
-	@docker-compose exec mongo mongo -uroot -psecret
+	@docker-compose exec mongo mongosh mongodb://root:secret@localhost:27017

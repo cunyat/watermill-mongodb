@@ -2,6 +2,7 @@ package mongodb
 
 import (
 	"context"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"strings"
 	"sync"
 
@@ -15,16 +16,17 @@ import (
 var ErrPublisherClosed = errors.New("publisher is closed")
 
 type PublisherConfig struct {
-	messagesCollection string
+	MessagesCollection string
 }
 
 func (c *PublisherConfig) setDefaults() {
-	if c.messagesCollection == "" {
-		c.messagesCollection = "messages"
+	if c.MessagesCollection == "" {
+		c.MessagesCollection = "messages"
 	}
 }
+
 func (c PublisherConfig) validate() error {
-	if err := validateCollectionName(c.messagesCollection); err != nil {
+	if err := validateCollectionName(c.MessagesCollection); err != nil {
 		return err
 	}
 
@@ -84,7 +86,12 @@ func (p *Publisher) Publish(topic string, messages ...*message.Message) error {
 	})
 
 	coll := p.db.Collection("messages")
-	_, err := coll.InsertMany(context.Background(), marshalMessages(topic, messages...))
+	elements, err :=  p.marshalMessages(topic, messages...)
+	if err != nil {
+		return err
+	}
+
+	_, err = coll.InsertMany(context.Background(), elements)
 	if err != nil {
 		return errors.Wrap(err, "could not insert messages to collection")
 	}
@@ -92,18 +99,33 @@ func (p *Publisher) Publish(topic string, messages ...*message.Message) error {
 	return nil
 }
 
-func marshalMessages(topic string, messages ...*message.Message) []interface{} {
+func (p *Publisher) marshalMessages(topic string, messages ...*message.Message) ([]interface{}, error) {
 	var arr = make([]interface{}, len(messages))
+	series := p.db.Collection("series")
+	filter := bson.D{{"_id", "messages"}}
+	update := bson.D{{"$inc", bson.D{{"current", 1}}}}
+
 	for i, msg := range messages {
+		var serie struct{ Current int `bson:"current"` }
+		err := series.FindOneAndUpdate(context.TODO(), filter, update, options.FindOneAndUpdate().SetUpsert(true)).Decode(&serie)
+		if err != nil {
+			if err == mongo.ErrNoDocuments {
+				serie.Current = 0
+			} else {
+				return nil, err
+			}
+		}
+
 		arr[i] = bson.D{
-			{"_id", msg.UUID},
+			{"_id", serie.Current},
+			{"uuid", msg.UUID},
 			{"topic", topic},
 			{"payload", msg.Payload},
 			{"metadata", msg.Metadata},
 		}
 	}
 
-	return arr
+	return arr, nil
 }
 
 // Close closes the publisher, which means that all Publish calls called before are finished
