@@ -106,6 +106,7 @@ func (p *Publisher) marshalMessages(topic string, messages ...*message.Message) 
 	update := bson.D{{"$inc", bson.D{{"current", 1}}}}
 
 	for i, msg := range messages {
+		// todo: make only one query and increment current by len(messages)
 		var serie struct{ Current int `bson:"current"` }
 		err := series.FindOneAndUpdate(context.TODO(), filter, update, options.FindOneAndUpdate().SetUpsert(true)).Decode(&serie)
 		if err != nil {
@@ -120,7 +121,7 @@ func (p *Publisher) marshalMessages(topic string, messages ...*message.Message) 
 			{"_id", serie.Current},
 			{"uuid", msg.UUID},
 			{"topic", topic},
-			{"payload", msg.Payload},
+			{"payload", string(msg.Payload)},
 			{"metadata", msg.Metadata},
 		}
 	}

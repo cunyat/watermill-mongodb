@@ -14,12 +14,12 @@ import (
 )
 
 type Subscriber struct {
-	db          *mongo.Database
+	db            *mongo.Database
 	consumerGroup string
 
 	subscribeWg *sync.WaitGroup
-	closing       chan struct{}
-	closed        bool
+	closing     chan struct{}
+	closed      bool
 
 	logger watermill.LoggerAdapter
 }
@@ -34,7 +34,7 @@ func NewSubscriber(db *mongo.Database, consumerGroup string, logger watermill.Lo
 	}
 
 	return &Subscriber{
-		db: db,
+		db:            db,
 		subscribeWg:   &sync.WaitGroup{},
 		consumerGroup: consumerGroup,
 		closing:       make(chan struct{}),
@@ -83,10 +83,9 @@ func (s *Subscriber) consume(ctx context.Context, topic string, out chan *messag
 		}
 
 		filter := bson.D{{"group", s.consumerGroup}, {"topic", topic}}
-		update := bson.D{{"$inc", bson.D{{"offset_consumed", 1}}}}
 		opts := options.FindOneAndUpdate().SetUpsert(true)
 		var off dbOffset
-		err := s.db.Collection("subscribers").FindOneAndUpdate(ctx, filter, update, opts).Decode(&off)
+		err := s.db.Collection("subscribers").FindOne(ctx, filter).Decode(&off)
 		if err != nil {
 			if err == mongo.ErrNoDocuments {
 				off.OffsetAcked = 0
@@ -97,46 +96,48 @@ func (s *Subscriber) consume(ctx context.Context, topic string, out chan *messag
 		}
 
 		logger.Trace("Querying for message", watermill.LogFields{
-			"offset": off.OffsetConsumed,
+			"offset": off.OffsetAcked,
 		})
 
-WaitMessage:
-		for {
-			var dbMsg dbMessage
-			err = s.db.Collection("messages").FindOne(ctx, bson.D{{"_id", off.OffsetConsumed}}, options.FindOne().SetSort(bson.D{{"_id", 1}})).
-				Decode(&dbMsg)
-			if err == mongo.ErrNoDocuments {
-				continue WaitMessage
-			}
-			if err != nil {
+		var dbMsg dbMessage
+		err = s.db.Collection("messages").FindOne(
+			ctx,
+			bson.D{{"_id", bson.D{{"$gt", off.OffsetAcked}}}, {"topic", topic}},
+			options.FindOne().SetSort(bson.D{{"_id", 1}}),
+		).Decode(&dbMsg)
+		if err == mongo.ErrNoDocuments {
+			continue
+		}
+
+		if err != nil {
+			panic(err)
+		}
+
+		msg := message.NewMessage(dbMsg.UUID, []byte(dbMsg.Payload))
+		msg.Metadata = dbMsg.Metadata
+
+		logger = logger.With(watermill.LogFields{
+			"msg_uuid": msg.UUID,
+		})
+		logger.Trace("Received message", watermill.LogFields{
+			"offset": dbMsg.Offset,
+		})
+
+		acked := s.sendMessage(ctx, msg, out, logger)
+		if acked {
+			logger.Trace("Executing ack update", watermill.LogFields{
+				"topic":   topic,
+				"message": msg.UUID,
+				"offset":  dbMsg.Offset,
+			})
+
+			err := s.db.Collection("subscribers").
+				FindOneAndUpdate(ctx, filter, bson.D{{"$set", bson.D{{"offset_acked", dbMsg.Offset}}}}, opts).
+				Err()
+			if err != nil && err != mongo.ErrNoDocuments {
 				panic(err)
 			}
 
-			msg := message.NewMessage(dbMsg.UUID, dbMsg.Payload)
-			msg.Metadata = dbMsg.Metadata
-
-			logger = logger.With(watermill.LogFields{
-				"msg_uuid": msg.UUID,
-			})
-			logger.Trace("Received message", nil)
-
-			acked := s.sendMessage(ctx, msg, out, logger)
-			if acked {
-				logger.Trace("Executing ack update", watermill.LogFields{
-					"topic":   topic,
-					"message": msg.UUID,
-				})
-
-				err := s.db.Collection("subscribers").
-					FindOneAndUpdate(ctx, filter, bson.D{{"$set", bson.D{{"offset_acked", dbMsg.Offset}}}}, opts).
-					Err()
-				if err != nil && err != mongo.ErrNoDocuments {
-					panic(err)
-				}
-
-			}
-
-			break WaitMessage
 		}
 	}
 }
@@ -152,7 +153,7 @@ type dbMessage struct {
 	Offset   int               `bson:"_id"`
 	UUID     string            `bson:"uuid"`
 	Topic    string            `bson:"topic"`
-	Payload  []byte            `bson:"payload"`
+	Payload  string            `bson:"payload"`
 	Metadata map[string]string `bson:"metadata"`
 }
 
