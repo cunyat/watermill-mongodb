@@ -17,11 +17,16 @@ var ErrPublisherClosed = errors.New("publisher is closed")
 
 type PublisherConfig struct {
 	MessagesCollection string
+	SeriesCollection string
 }
 
 func (c *PublisherConfig) setDefaults() {
 	if c.MessagesCollection == "" {
 		c.MessagesCollection = "messages"
+	}
+
+	if c.SeriesCollection == "" {
+		c.SeriesCollection = "series"
 	}
 }
 
@@ -48,6 +53,7 @@ var _ message.Publisher = &Publisher{}
 
 func NewPublisher(db *mongo.Database, config PublisherConfig, logger watermill.LoggerAdapter) (*Publisher, error) {
 	config.setDefaults()
+
 	if err := config.validate(); err != nil {
 		return nil, errors.Wrap(err, "invalid publisher config")
 	}
@@ -86,7 +92,7 @@ func (p *Publisher) Publish(topic string, messages ...*message.Message) error {
 	})
 
 	coll := p.db.Collection("messages")
-	elements, err :=  p.marshalMessages(topic, messages...)
+	elements, err := p.marshalMessages(topic, messages...)
 	if err != nil {
 		return err
 	}
@@ -101,24 +107,25 @@ func (p *Publisher) Publish(topic string, messages ...*message.Message) error {
 
 func (p *Publisher) marshalMessages(topic string, messages ...*message.Message) ([]interface{}, error) {
 	var arr = make([]interface{}, len(messages))
-	series := p.db.Collection("series")
+	series := p.db.Collection(p.config.SeriesCollection)
 	filter := bson.D{{"_id", "messages"}}
-	update := bson.D{{"$inc", bson.D{{"current", 1}}}}
+	update := bson.D{{"$inc", bson.D{{"current", len(messages)}}}}
+	opts := options.FindOneAndUpdate().SetUpsert(true)
+	var serie struct {
+		Current int `bson:"current"`
+	}
+
+	if err := series.FindOneAndUpdate(context.TODO(), filter, update, opts).Decode(&serie); err != nil {
+		if err == mongo.ErrNoDocuments {
+			serie.Current = 0
+		} else {
+			return nil, err
+		}
+	}
 
 	for i, msg := range messages {
-		// todo: make only one query and increment current by len(messages)
-		var serie struct{ Current int `bson:"current"` }
-		err := series.FindOneAndUpdate(context.TODO(), filter, update, options.FindOneAndUpdate().SetUpsert(true)).Decode(&serie)
-		if err != nil {
-			if err == mongo.ErrNoDocuments {
-				serie.Current = 0
-			} else {
-				return nil, err
-			}
-		}
-
 		arr[i] = bson.D{
-			{"_id", serie.Current},
+			{"_id", serie.Current + i},
 			{"uuid", msg.UUID},
 			{"topic", topic},
 			{"payload", string(msg.Payload)},
