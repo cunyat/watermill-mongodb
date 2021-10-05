@@ -55,7 +55,9 @@ func createMongoDBPubSub(t *testing.T) (message.Publisher, message.Subscriber) {
 
 func TestMongoDBPublishSubscribe(t *testing.T) {
 	features := tests.Features{
-		ConsumerGroups: false,
+		ConsumerGroups:  true,
+		GuaranteedOrder: true,
+		Persistent:      true,
 	}
 
 	tests.TestPubSub(
