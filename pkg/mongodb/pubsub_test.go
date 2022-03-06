@@ -20,7 +20,9 @@ var (
 )
 
 func newPubSub(t *testing.T, db *mongo.Database, consumerGroup string) (message.Publisher, message.Subscriber) {
-	pub, err := NewPublisher(db, PublisherConfig{}, logger)
+	database, err := NewMongoDatabase(db, MongoDatabaseConfig{}, logger)
+
+	pub, err := NewPublisher(database, logger)
 	require.NoError(t, err)
 
 	sub, err := NewSubscriber(db, consumerGroup, logger)

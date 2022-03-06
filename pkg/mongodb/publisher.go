@@ -2,45 +2,17 @@ package mongodb
 
 import (
 	"context"
-	"go.mongodb.org/mongo-driver/mongo/options"
-	"strings"
 	"sync"
 
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/pkg/errors"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
 )
 
 var ErrPublisherClosed = errors.New("publisher is closed")
 
-type PublisherConfig struct {
-	MessagesCollection string
-	SeriesCollection string
-}
-
-func (c *PublisherConfig) setDefaults() {
-	if c.MessagesCollection == "" {
-		c.MessagesCollection = "messages"
-	}
-
-	if c.SeriesCollection == "" {
-		c.SeriesCollection = "series"
-	}
-}
-
-func (c PublisherConfig) validate() error {
-	if err := validateCollectionName(c.MessagesCollection); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 type Publisher struct {
-	config PublisherConfig
-	db     *mongo.Database
+	db Database
 
 	publishWg *sync.WaitGroup
 	closech   chan struct{}
@@ -51,13 +23,7 @@ type Publisher struct {
 
 var _ message.Publisher = &Publisher{}
 
-func NewPublisher(db *mongo.Database, config PublisherConfig, logger watermill.LoggerAdapter) (*Publisher, error) {
-	config.setDefaults()
-
-	if err := config.validate(); err != nil {
-		return nil, errors.Wrap(err, "invalid publisher config")
-	}
-
+func NewPublisher(db Database, logger watermill.LoggerAdapter) (*Publisher, error) {
 	if db == nil {
 		return nil, errors.New("db is nil")
 	}
@@ -67,8 +33,7 @@ func NewPublisher(db *mongo.Database, config PublisherConfig, logger watermill.L
 	}
 
 	return &Publisher{
-		config: config,
-		db:     db,
+		db: db,
 
 		publishWg: new(sync.WaitGroup),
 		closech:   make(chan struct{}),
@@ -91,49 +56,9 @@ func (p *Publisher) Publish(topic string, messages ...*message.Message) error {
 		"len_messages": len(messages),
 	})
 
-	coll := p.db.Collection("messages")
-	elements, err := p.marshalMessages(topic, messages...)
-	if err != nil {
-		return err
-	}
-
-	_, err = coll.InsertMany(context.Background(), elements)
-	if err != nil {
-		return errors.Wrap(err, "could not insert messages to collection")
-	}
+	p.db.InsertMessages(context.Background(), topic, messages...)
 
 	return nil
-}
-
-func (p *Publisher) marshalMessages(topic string, messages ...*message.Message) ([]interface{}, error) {
-	var arr = make([]interface{}, len(messages))
-	series := p.db.Collection(p.config.SeriesCollection)
-	filter := bson.D{{"_id", "messages"}}
-	update := bson.D{{"$inc", bson.D{{"current", len(messages)}}}}
-	opts := options.FindOneAndUpdate().SetUpsert(true)
-	var serie struct {
-		Current int `bson:"current"`
-	}
-
-	if err := series.FindOneAndUpdate(context.TODO(), filter, update, opts).Decode(&serie); err != nil {
-		if err == mongo.ErrNoDocuments {
-			serie.Current = 0
-		} else {
-			return nil, err
-		}
-	}
-
-	for i, msg := range messages {
-		arr[i] = bson.D{
-			{"_id", serie.Current + i},
-			{"uuid", msg.UUID},
-			{"topic", topic},
-			{"payload", string(msg.Payload)},
-			{"metadata", msg.Metadata},
-		}
-	}
-
-	return arr, nil
 }
 
 // Close closes the publisher, which means that all Publish calls called before are finished
@@ -148,28 +73,6 @@ func (p *Publisher) Close() error {
 
 	close(p.closech)
 	p.publishWg.Wait()
-
-	return nil
-}
-
-// validateCollectionName validates a mongodb collection name
-// see https://docs.mongodb.com/manual/reference/limits/#mongodb-limit-Restriction-on-Collection-Names
-func validateCollectionName(name string) error {
-	if name == "" {
-		return errors.New("empty collection name")
-	}
-
-	if strings.Contains(name, "$") {
-		return errors.New("collection name can not contain '$' character")
-	}
-
-	if strings.Contains(name, "\u0000") {
-		return errors.New("colleciton name can not include null character")
-	}
-
-	if strings.HasPrefix(name, "system.") {
-		return errors.New("collection name can not start with 'system.'")
-	}
 
 	return nil
 }

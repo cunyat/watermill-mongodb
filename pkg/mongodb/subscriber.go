@@ -2,13 +2,14 @@ package mongodb
 
 import (
 	"context"
+	"sync"
+	"time"
+
 	"github.com/ThreeDotsLabs/watermill"
 	"github.com/pkg/errors"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"sync"
-	"time"
 
 	"github.com/ThreeDotsLabs/watermill/message"
 )
